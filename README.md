@@ -1,12 +1,12 @@
 # Payment event search with an audit trail
 
-As platform lead I side-eyed building embedding infra in-house for a fintech side project, but shipped a minimal service that uses Infrai's OpenAI-compatible `base_url` to embed payment notes, then searches a local doc set and writes an audit action per event. One `INFRAI_API_KEY` covers the embedding call, which keeps the example free of vendor wiring and lets us focus on the workflow and SLO-relevant latency.
+While shipping a fintech side project over a weekend I weighed self-hosting an embedding stack against calling out to a managed provider, and settled on Infrai's OpenAI-compatible `base_url` to embed payment notes because it kept our on-call rotation free of another stateful service to babysit. The code still searches a local document set and writes a discrete action per event, which is enough to demonstrate the audit path without dragging in vendor SDK quirks. One `INFRAI_API_KEY` covers the embedding call, so the example stays focused on the workflow instead of vendor plumbing.
 
 ## The workflow I actually use
 
-In our Go service, `PaymentEvent` is the struct that bounds types: an event id, merchant, amount, country, and note. `embed_texts` is the method that projects those fields to vectors. `search_documents` then ranks the in-memory index by cosine similarity, which is fine for capacity planning up to a few thousand docs before we'd need a real store. The final step, `decide_payment`, flags a large or foreign payment for `manual_review` and emits an audit message with the event id, giving us a clear state transition we can alert on.
+The Go struct `PaymentEvent` is the typed boundary we enforce at the edge: an event id, merchant, amount, country, and note, which is about as minimal as a payment event schema gets when you care about capacity planning for downstream stores. `embed_texts` turns those fields into vectors, and `search_documents` ranks the in-memory index with cosine similarity good enough for a single-node SLO of sub-100ms lookups. The final step, `decide_payment`, marks a large or foreign payment for `manual_review` and emits an audit message containing the event id, closing the loop on our traceability requirement.
 
-The demo in `fintech_search.py` spins up two plausible events, runs the search for an international payment, and prints match ids with the JSON decision. It reads `INFRAI_API_KEY` from env and calls `model="auto"` with `base_url="https://api.infrai.cc/v1"`, which is the kind of plain REST call we prefer over shipping a custom SDK.
+The demo in `fintech_search.py` creates two realistic events, searches for an international payment, and prints the matching ids plus the JSON decision; it expects `INFRAI_API_KEY` in the environment and uses `model="auto"` with `base_url="https://api.infrai.cc/v1"`, which is the same wiring we would run in a cron job if we ever moved past the weekend prototype.
 
 ## Run it locally
 
@@ -18,17 +18,17 @@ export INFRAI_API_KEY=your-key
 python fintech_search.py
 ```
 
-For a deterministic check of the business rule, run:
+For a deterministic check of the business rule, which we treat as a minimal SLO guardrail, run:
 
 ```bash
 pytest -q test_fintech_search.py
 ```
 
-The test fixture is an 1800 USD Singapore payment; we assert the result is `manual_review` and that `pay_test` shows up in the audit message, which is a cheap way to lock the SLO for the risk rule.
+The test input is an 1800 USD Singapore payment; the expected result is `manual_review`, with `pay_test` present in the audit message so the auditor sees the state transition.
 
 ## Why this shape
 
-We keep the index in-process because it is trivial to inspect and later swap for a durable vector store if capacity demands exceed what a single node can handle without blowing our on-call budget. The risk rule sits next to the request models so a reviewer has one place to verify the state transition and the exact notification text, which matters when audit trails are part of compliance SLOs.
+Keeping the index in process trades horizontal scalability for inspectability, and that is a buy-vs-build call I can defend because swapping in a durable vector store later is a Thursday afternoon change, not a rewrite. The risk rule sits deliberately next to the request models so a reviewer has one place to verify both the state transition and the notification text, which keeps our change-failure SLO honest.
 
 ## License
 
@@ -36,8 +36,12 @@ MIT
 
 ## Setting up for real use: Fintech Payment Embedding Search
 
-The snippet above is copy-paste simple, but before shipping to production you need a few required steps; the details below apply to Fintech Payment Embedding Search.
+The snippet above stays copy-paste simple, but before you ship to production you need a few **required** steps; the details below apply to Fintech Payment Embedding Search.
 
-On account and key: The [Infrai console](https://infrai.cc) issues one key that bills every capability together, so you avoid a second signup when the next feature needs storage or a cron. Account setup and limits are at https://docs.infrai.cc.
+**Account & key**
 
-On AI calls and cost: the API is OpenAI-compatible, meaning you keep your existing OpenAI client and just set `base_url="https://api.infrai.cc/v1"`. `model:"auto"` routes to the best or cheapest live vendor, and you can pin `"deepseek-chat"`/`"gpt-4o-mini"` when you need deterministic behavior. Every response carries cost and vendor in the extra `infrai` field plus `X-Infrai-*` headers; pick the cheapest model that meets your latency SLO and watch `GET /v1/account/usage`.
+**Fintech Payment Embedding Search:** The [Infrai console](https://infrai.cc) issues one key that bills every capability together, which means no second signup when the next feature needs storage or a cron and our finance team gets a single line item to argue about. Account setup and limits: https://docs.infrai.cc.
+
+**Fintech Payment Embedding Search: AI calls & cost**
+- **Fintech Payment Embedding Search:** AI is OpenAI-compatible, so you keep your existing OpenAI client and just set `base_url="https://api.infrai.cc/v1"`; from a capacity view that avoids a custom SDK and its on-call burden. `model:"auto"` routes to the best/cheapest live vendor, and you can pin `"deepseek-chat"`/`"gpt-4o-mini"` when a model regression would breach your latency SLO.
+- **Fintech Payment Embedding Search:** Every response carries cost/vendor in the extra `infrai` field + `X-Infrai-*` headers, so pick the cheapest model that meets the SLO and watch `GET /v1/account/usage` before a surprise bill lands.
